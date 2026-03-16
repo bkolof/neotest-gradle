@@ -5,6 +5,7 @@ local get_package_name = require('neotest-gradle.hooks.shared_utilities').get_pa
 local XML_FILE_SUFFIX = '.xml'
 local STATUS_PASSED = 'passed' --- see neotest.Result.status
 local STATUS_FAILED = 'failed' --- see neotest.Result.status
+local STATUS_SKIPPED = 'skipped' --- see neotest.Result.status
 
 --- Searches for all files XML files in this directory (not recursive) and
 --- parses their content as Lua tables using some Neotest utility.
@@ -45,11 +46,20 @@ local function find_position_for_test_case(tree, test_case_node)
   local test_name = test_case_node._attr.name:gsub('%(.*%)$', '') -- Strip parameters
   local class_name = test_case_node._attr.classname
 
+  -- Build candidate IDs to match against treesitter positions
+  -- Try progressively stripping nested class levels
   local candidate_ids = {
-    class_name .. '.' .. test_name,                    -- JUnit4: com.example.Test.method
-    class_name:gsub('%$', '.') .. '.' .. test_name     -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
+    class_name .. '.' .. test_name,                    -- Exact: Test$Inner$Deep.method
+    class_name:gsub('%$', '.') .. '.' .. test_name,    -- Dots: Test.Inner.Deep.method
   }
-  
+
+  -- Strip nested classes one level at a time: Test$A$B -> Test$A -> Test
+  local stripped = class_name
+  while stripped:find('%$') do
+    stripped = stripped:gsub('%$[^$]*$', '')            -- Remove last $segment
+    table.insert(candidate_ids, stripped:gsub('%$', '.') .. '.' .. test_name)
+  end
+
   for _, position in tree:iter() do
     if position then
       for _, candidate_id in ipairs(candidate_ids) do
@@ -104,9 +114,15 @@ end
 --- @return table<string, table> - see neotest.Result
 return function(build_specfication, _, tree)
   local results = {}
-  local position = tree:data()
   local results_directory = build_specfication.context.test_resuls_directory
   local juris_reports = parse_xml_files_from_directory(results_directory)
+
+  -- Default all test positions to skipped (overridden by actual results below)
+  for _, pos in tree:iter() do
+    if pos and (pos.type == 'test') then
+      results[pos.id] = { status = STATUS_SKIPPED }
+    end
+  end
 
   for _, juris_report in pairs(juris_reports) do
     for _, test_suite_node in pairs(asList(juris_report.testsuite)) do

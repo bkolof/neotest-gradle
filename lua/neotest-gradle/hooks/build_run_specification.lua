@@ -41,11 +41,15 @@ local function get_test_results_directory(gradle_executable, project_directory)
 
   for _, line in pairs(output_lines) do
     if line:match('testResultsDir: ') then
-      return line:gsub('testResultsDir: ', '') .. lib.files.sep .. 'test'
+      local dir = line:gsub('testResultsDir: ', '')
+      if dir ~= '' and dir ~= 'null' then
+        return dir .. lib.files.sep .. 'test'
+      end
     end
   end
 
-  return ''
+  -- Fallback for modern Gradle (8.x/9.x) where testResultsDir is no longer a project-level property
+  return project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
 end
 
 --- Takes a NeoTest tree object and iterate over its positions. For each position
@@ -109,7 +113,15 @@ return function(arguments)
   local position = arguments.tree:data()
   local project_directory = find_project_directory(position.path)
   local gradle_executable = get_gradle_executable(project_directory)
-  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
+  local command = { gradle_executable, '--project-dir', project_directory }
+
+  -- Clean test results to ensure fresh XML reports
+  -- Only clean for file/directory runs; single test runs can reuse the cache
+  if position.type ~= 'test' then
+    table.insert(command, 'cleanTest')
+  end
+
+  table.insert(command, 'test')
   vim.list_extend(command, get_test_filter_arguments(arguments.tree, position))
 
   local context = {}
